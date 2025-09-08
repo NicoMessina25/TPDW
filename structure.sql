@@ -89,6 +89,26 @@ CREATE TABLE IF NOT EXISTS public.time_dim
     CONSTRAINT time_dim_pkey PRIMARY KEY (time_dim_id)
 );
 
+
+CREATE TABLE IF NOT EXISTS Site_Dim(
+			 office_id_Dim   BIGSERIAL  primary key NOT NULL,
+			 office_id bigint NOT NULL,
+			 address character varying NOT NULL,
+			 name character varying NOT NULL,
+			 site bigint NOT NULL,
+			 timestamp_from TIMESTAMPTZ NOT NULL,
+			 timestamp_to   TIMESTAMPTZ NOT NULL 
+)
+
+
+
+CREATE TABLE IF NOT EXISTS source_dimension(
+	source_id bigint primary key NOT NULL,
+	description character varying COLLATE pg_catalog."default" NOT NULL,
+	timestamp_from TIMESTAMPTZ NOT NULL,
+    timestamp_to   TIMESTAMPTZ NOT NULL 
+)
+
 CREATE OR REPLACE VIEW public.period_dim
  AS
  SELECT min(time_dim_id) AS period_dim_id,
@@ -824,3 +844,225 @@ BEGIN
     END LOOP;
 END;
 $$;
+
+
+CREATE OR REPLACE PROCEDURE public.load_site(IN p_username character varying, IN p_password character varying, IN p_dbname character varying)
+    LANGUAGE 'plpgsql'
+    
+AS $BODY$
+DECLARE
+	timestamp_now timestamp with time zone;
+BEGIN
+	DROP TABLE IF EXISTS temp_site;
+	
+	-- Cargamos staging usando dblink con parámetros dinámicos
+EXECUTE format(
+		$sql$
+		CREATE TEMP TABLE temp_Site AS
+		SELECT *
+		FROM dblink(
+			'host=localhost user=%I  password=%s dbname=%s',
+			'SELECT 
+					s.site,
+					s.companyaddress,
+					s.companyname,
+					s.parentsite
+			 FROM site s
+			 WHERE s.active = TRUE
+			 AND s.initialized = TRUE
+			 and  s.parentsite IS NOT NULL'
+		) AS t(
+			 office_id bigint,
+			 address character varying,
+			 name character varying,
+			 site bigint
+		)
+		$sql$,
+		p_username, p_password, p_dbname
+	);
+
+
+    timestamp_now := now();
+
+	/* Cierre de versiones anteriores cuando cambian los datos */
+		UPDATE Site_Dim sd
+		SET timestamp_to = timestamp_now
+		FROM temp_Site ts
+		WHERE sd.office_id = ts.office_id
+		  AND sd.timestamp_to = '9999-12-31'
+		  AND (
+				sd.Name      <> ts.name OR
+				sd.Address   <> ts.Address OR
+				sd.site   <> ts.site
+			  );
+
+
+
+
+
+	/* Inserción de nuevas versiones para registros cambiados */
+		INSERT INTO Site_Dim (
+							    office_id,
+							    Address,
+							    Name,
+							    site,
+							    timestamp_from,
+							    timestamp_to
+					)
+		SELECT
+    		ts.office_id,
+		    ts.Address,
+		    ts.Name,
+		    ts.site,
+		    timestamp_now AS timestamp_from,
+		    '9999-12-31' AS timestamp_to
+		FROM temp_Site ts
+		WHERE EXISTS (
+		    SELECT 1
+		    FROM Site_Dim sd
+		    WHERE sd.office_id = ts.office_id
+		      AND sd.timestamp_to = timestamp_now
+			  AND (
+				sd.name      <> ts.Name OR
+				sd.Address   <> ts.Address OR
+				sd.site   <> ts.site
+			  )
+
+		);
+
+		 
+
+
+
+		 /* Inserción de registros nuevos */
+		INSERT INTO Site_Dim (
+							    office_id,
+							    Address,
+							    Name,
+							    site,
+							    timestamp_from,
+							    timestamp_to
+					)
+		SELECT
+		    ts.office_id,
+		    ts.Address,
+		    ts.Name,
+		    ts.site,
+		    timestamp_now AS timestamp_from,
+		    '9999-12-31' AS timestamp_to
+		FROM temp_Site ts
+		WHERE NOT EXISTS (
+		    SELECT 1
+		    FROM Site_Dim sd
+		    WHERE sd.office_id = ts.office_id
+		);
+		
+END
+	$BODY$;
+	call load_site('postgres','1234','circuloProfesional')
+
+
+
+	
+
+
+call load_source('postgres','1234','circuloProfesional')
+
+CREATE OR REPLACE PROCEDURE public.load_source(IN p_username character varying, IN p_password character varying, IN p_dbname character varying)
+    LANGUAGE 'plpgsql'
+    
+AS $BODY$
+DECLARE
+	timestamp_now timestamp with time zone;
+BEGIN
+	DROP TABLE IF EXISTS temp_source;
+	
+	-- Cargamos staging usando dblink con parámetros dinámicos
+EXECUTE format(
+		$sql$
+		CREATE TEMP TABLE temp_Source AS
+		SELECT *
+		FROM dblink(
+			'host=localhost user=%I  password=%s dbname=%s',
+			'SELECT 
+					s.benefitoperationsource,
+					s.description
+			 FROM benefitoperationsource s'
+		) AS t(
+			 source_id bigint,
+			 description character varying
+		)
+		$sql$,
+		p_username, p_password, p_dbname
+	);
+
+
+    timestamp_now := now();
+
+	/* Cierre de versiones anteriores cuando cambian los datos */
+		UPDATE source_Dimension sd
+		SET timestamp_to = timestamp_now
+		FROM temp_Source ts
+		WHERE sd.source_id = ts.source_id
+		  AND sd.timestamp_to = '9999-12-31'
+		  AND (
+				sd.description      <> ts.description
+			  );
+
+
+
+
+
+	/* Inserción de nuevas versiones para registros cambiados */
+		INSERT INTO Source_Dimension (
+							    source_id,
+							    description,
+							    timestamp_from,
+							    timestamp_to
+					)
+		SELECT
+    		ts.source_id,
+		    ts.description,
+		    timestamp_now AS timestamp_from,
+		    '9999-12-31' AS timestamp_to
+		FROM temp_Source ts
+		WHERE EXISTS (
+		    SELECT 1
+		    FROM Source_Dimension sd
+		    WHERE sd.source_id = ts.source_id
+		      AND sd.timestamp_to = timestamp_now
+			  AND (
+				sd.description      <> ts.description
+			  )
+
+		);
+
+		 
+
+
+
+		 /* Inserción de registros nuevos */
+		INSERT INTO Source_Dimension (
+							    source_id,
+							    description,
+							    timestamp_from,
+							    timestamp_to
+					)
+		SELECT
+		    ts.source_id,
+		    ts.description,
+		    timestamp_now AS timestamp_from,
+		    '9999-12-31' AS timestamp_to
+		FROM temp_Source ts
+		WHERE NOT EXISTS (
+		    SELECT 1
+		    FROM Source_Dimension sd
+		    WHERE sd.source_id = ts.source_id
+		);
+		
+END
+	$BODY$;
+
+
+
+		
