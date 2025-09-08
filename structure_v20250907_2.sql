@@ -67,19 +67,19 @@ CREATE TABLE IF NOT EXISTS public.time_dim
 (
     time_dim_id bigserial NOT NULL,
     date date NOT NULL,
-	date_name character varying COLLATE pg_catalog."default" NOT NULL,
+    date_name character varying COLLATE pg_catalog."default" NOT NULL,
     year integer NOT NULL,
     four_month_period integer NOT NULL,
     four_month_period_name character varying COLLATE pg_catalog."default" NOT NULL,
-	three_month_period integer NOT NULL,
-	three_month_period_name character varying COLLATE pg_catalog."default" NOT NULL,
+    three_month_period integer NOT NULL,
+    three_month_period_name character varying COLLATE pg_catalog."default" NOT NULL,
     two_month_period integer NOT NULL,
     two_month_period_name character varying COLLATE pg_catalog."default" NOT NULL,
     day integer NOT NULL,
     month integer NOT NULL,
     month_name character varying COLLATE pg_catalog."default" NOT NULL,
-    week integer NOT NULL,
-    week_name character varying COLLATE pg_catalog."default" NOT NULL,
+    weekday integer NOT NULL,
+    weekday_name character varying COLLATE pg_catalog."default" NOT NULL,
     season character varying COLLATE pg_catalog."default" NOT NULL,
     type_day character varying COLLATE pg_catalog."default" NOT NULL,
     week_of_the_month integer NOT NULL,
@@ -88,6 +88,17 @@ CREATE TABLE IF NOT EXISTS public.time_dim
     week_of_the_year_name character varying COLLATE pg_catalog."default" NOT NULL,
     CONSTRAINT time_dim_pkey PRIMARY KEY (time_dim_id)
 );
+
+CREATE OR REPLACE VIEW public.period_dim
+ AS
+ SELECT min(time_dim_id) AS period_dim_id,
+    year,
+    month,
+    month_name,
+    to_char(make_date(year, month, 1)::timestamp with time zone, 'mm/yyyy'::text) AS period_name
+   FROM time_dim td
+  GROUP BY year, month, month_name
+  ORDER BY (min(time_dim_id));
 
 CREATE TABLE IF NOT EXISTS public.age_dim
 (
@@ -113,7 +124,6 @@ DECLARE
 BEGIN
 	DROP TABLE IF EXISTS temp_health_entity_dim;
 	
-	-- Cargamos staging usando dblink con parámetros dinámicos
 	EXECUTE format(
 		$sql$
 		CREATE TEMP TABLE temp_health_entity_dim AS
@@ -189,8 +199,9 @@ BEGIN
 	        hed.invoicing_type <> tmp.invoicing_type OR
 	        hed.plan <> tmp.plan
 	      );
-	GET DIAGNOSTICS new_version_records = ROW_COUNT;  -- Cantidad de registros actualizados (nuevas versiones)
-	
+	GET DIAGNOSTICS new_version_records = ROW_COUNT;
+
+	/* Inserción de nuevos registros */
 	INSERT INTO health_entity_dim(health_entity_id, commercial_name, code, invoicing_type, plan, site, timestamp_from, timestamp_to, plan_id)
 	SELECT 
 		tmp.health_entity_id,
@@ -208,10 +219,12 @@ BEGIN
 		FROM health_entity_dim
 		WHERE health_entity_dim.plan_id = tmp.plan_id
 	);
-    GET DIAGNOSTICS new_records = ROW_COUNT;  -- Cantidad de registros nuevos
+    GET DIAGNOSTICS new_records = ROW_COUNT;
 
-    -- Mostrar resultados al operador
-    RAISE NOTICE 'Cantidad de registros con nueva versión: %', new_version_records;
+    -- Reporte al operador
+	RAISE NOTICE '';
+	RAISE NOTICE 'HEALTH_ENTITY_DIM RESULTS:';
+    RAISE NOTICE 'Cantidad de registros con nueva versión (SCD2): %', new_version_records;
     RAISE NOTICE 'Cantidad de registros nuevos: %', new_records;
 END
 $BODY$;
@@ -231,7 +244,6 @@ DECLARE
 BEGIN
 	DROP TABLE IF EXISTS temp_nomenclator_dim;
 	
-	-- Cargamos staging usando dblink con parámetros dinámicos
 	EXECUTE format(
 		$sql$
 		CREATE TEMP TABLE temp_nomenclator_dim AS
@@ -317,7 +329,8 @@ BEGIN
 	        nd.health_entity <> tmp.health_entity
 	      );
 	GET DIAGNOSTICS new_version_records = ROW_COUNT;
-	
+
+	/* Inserción de nuevos registros */
 	INSERT INTO nomenclator_dim(
 	    nomenclator_id, description, code, chapter, category, health_entity, site, timestamp_from, timestamp_to
 	)
@@ -340,6 +353,8 @@ BEGIN
 	GET DIAGNOSTICS new_records = ROW_COUNT;
 
     -- Reporte al operador
+	RAISE NOTICE '';
+	RAISE NOTICE 'NOMENCLATOR_DIM RESULTS:';
     RAISE NOTICE 'Cantidad de nomencladores actualizados (SCD1): %', updated_records;
     RAISE NOTICE 'Cantidad de nomencladores con nueva versión (SCD2): %', new_version_records;
     RAISE NOTICE 'Cantidad de nomencladores nuevos: %', new_records;
@@ -351,6 +366,7 @@ CREATE OR REPLACE PROCEDURE public.load_piece_face_sector_dim(
 	)
 LANGUAGE 'plpgsql'
 AS $BODY$
+
 DECLARE
     v_piece INT;
     v_sector TEXT;
@@ -361,7 +377,7 @@ BEGIN
     -- 1) Verificar si la tabla ya tiene datos; si es así, salir
     SELECT COUNT(*) INTO v_count FROM piece_face_sector_dim;
     IF v_count > 0 THEN
-        RAISE NOTICE 'La tabla ya contiene datos. SP abortado.';
+        RAISE NOTICE 'La tabla "piece_face_sector_dim" ya contiene datos. SP abortado.';
         RETURN;
     END IF;
 
@@ -433,7 +449,10 @@ CREATE OR REPLACE PROCEDURE public.load_patient_dim(
 	
 LANGUAGE 'plpgsql'
 AS $BODY$
-begin
+DECLARE
+	new_records bigint;
+	updated_records bigint;
+BEGIN
 	DROP TABLE IF EXISTS temp_patient_dim;
 
 	EXECUTE format(
@@ -444,9 +463,9 @@ begin
 			'host=localhost user=%I password=%s dbname=%s',
 			'SELECT 
 				me.medereentity, 
-				me.firstname, 
-				me.lastname,
-				me.gender,
+				COALESCE(me.firstname, ''Desconocido''), 
+				COALESCE(me.lastname, ''Desconocido''),
+				COALESCE(me.gender, ''Desconocido''),
 				me.site
 		 	FROM medereentity me
 		 	WHERE me.medereentitytype = 2 AND me.deleted IS NULL'
@@ -461,20 +480,27 @@ begin
 		p_username, p_password, p_dbname
 	);
 
+	/* Actualiza los atributos lentamente cambiantes de tipo 1 */
 	UPDATE patient_dim pd
 	SET
 		first_name = tpd.first_name,
 		last_name = tpd.last_name,
 		gender = tpd.gender
 	FROM temp_patient_dim tpd
-	WHERE tpd.patient_id = pd.patient_id;
+	WHERE tpd.patient_id = pd.patient_id AND
+		( 	pd.first_name <> tpd.first_name OR
+			pd.last_name <> tpd.last_name OR
+			pd.gender <> tpd.gender
+		);
+	GET DIAGNOSTICS updated_records = ROW_COUNT;
 
+	/* Inserción de nuevas versiones para registros cambiados */
 	INSERT INTO patient_dim(patient_id, first_name, last_name, gender, site)
 	SELECT
 		tpd.patient_id,
-		COALESCE(NULLIF(tpd.first_name, ''),'Desconocido') AS first_name,
-		COALESCE(NULLIF(tpd.last_name, ''),'Desconocido') AS last_name,
-		COALESCE(NULLIF(tpd.gender, ''),'Desconocido') AS gender,
+		tpd.first_name,
+		tpd.last_name,
+		tpd.gender,
 		tpd.site
 	FROM temp_patient_dim tpd
 	WHERE NOT EXISTS (
@@ -482,7 +508,13 @@ begin
 		FROM patient_dim pd 
 		WHERE pd.patient_id = tpd.patient_id
 	);
+	GET DIAGNOSTICS new_records = ROW_COUNT;
 
+	-- Reporte al operador
+	RAISE NOTICE '';
+	RAISE NOTICE 'PATIENT_DIM RESULTS:';
+	RAISE NOTICE 'Cantidad de pacientes actualizados (SCD1): %', updated_records;
+    RAISE NOTICE 'Cantidad de pacientes nuevos: %', new_records;
 END
 $BODY$;
 
@@ -495,7 +527,10 @@ CREATE OR REPLACE PROCEDURE public.load_professional_dim(
 	
 LANGUAGE 'plpgsql'
 AS $BODY$
-begin
+DECLARE
+	new_records bigint;
+	updated_records bigint;
+BEGIN
 	DROP TABLE IF EXISTS temp_professional_dim;
 
 	EXECUTE format(
@@ -506,9 +541,9 @@ begin
 			'host=localhost user=%I password=%s dbname=%s',
 			'SELECT 
 				me.medereentity, 
-				me.firstname, 
-				me.lastname,
-				me.gender,
+				COALESCE(me.firstname, ''Desconocido''), 
+				COALESCE(me.lastname, ''Desconocido''), 
+				COALESCE(me.gender, ''Desconocido''), 
 				me.workerenrollment,
 				me.enrollmenttype,
 				me.site
@@ -527,6 +562,7 @@ begin
 		p_username, p_password, p_dbname
 	);
 
+	/* Actualiza los atributos lentamente cambiantes de tipo 1 */
 	UPDATE professional_dim pd
 	SET
 		first_name = tpd.first_name,
@@ -535,14 +571,22 @@ begin
 		license_number = tpd.license_number,
 		license_type = tpd.license_type
 	FROM temp_professional_dim tpd
-	WHERE tpd.professional_id = pd.professional_id;
+	WHERE tpd.professional_id = pd.professional_id AND
+		(	pd.first_name <> tpd.first_name OR
+			pd.last_name <> tpd.last_name OR
+			pd.gender <> tpd.gender OR
+			pd.license_number <> tpd.license_number OR
+			pd.license_type <> tpd.license_type
+		);
+	GET DIAGNOSTICS updated_records = ROW_COUNT;
 
+	/* Inserción de nuevos registros */
 	INSERT INTO professional_dim(professional_id, first_name, last_name, gender, license_number, license_type, site)
 	SELECT
 		tpd.professional_id,
-		COALESCE(NULLIF(tpd.first_name, ''),'Desconocido') AS first_name,
-		COALESCE(NULLIF(tpd.last_name, ''),'Desconocido') AS last_name,
-		COALESCE(NULLIF(tpd.gender, ''),'Desconocido') AS gender,
+		tpd.first_name,
+		tpd.last_name,
+		tpd.gender,
 		tpd.license_number,
 		tpd.license_type,
 		tpd.site
@@ -552,7 +596,13 @@ begin
 		FROM professional_dim pd 
 		WHERE pd.professional_id = tpd.professional_id
 	);
+	GET DIAGNOSTICS new_records = ROW_COUNT;
 
+	-- Reporte al operador
+	RAISE NOTICE '';
+	RAISE NOTICE 'PROFESSIONAL_DIM RESULTS:';
+	RAISE NOTICE 'Cantidad de profesionales actualizados (SCD1): %', updated_records;
+    RAISE NOTICE 'Cantidad de profesionales nuevos: %', new_records;
 END
 $BODY$;
 
@@ -633,6 +683,7 @@ $$;
 CREATE OR REPLACE PROCEDURE load_time_dim()
 LANGUAGE plpgsql
 AS $$
+
 DECLARE
     v_count INTEGER;
     v_start_date DATE := '2020-01-01';
@@ -665,8 +716,8 @@ BEGIN
             day,
             month,
             month_name,
-            week,
-            week_name,
+            weekday,
+            weekday_name,
             season,
             type_day,
             week_of_the_month,
@@ -675,7 +726,7 @@ BEGIN
             week_of_the_year_name
         ) VALUES (
             v_current_date,
-			TO_CHAR(v_current_date, 'Date')
+			TO_CHAR(v_current_date, 'DD/MM/YYYY'),
             EXTRACT(YEAR FROM v_current_date),
             CASE
                 WHEN EXTRACT(MONTH FROM v_current_date) BETWEEN 1 AND 4 THEN 1
@@ -683,21 +734,21 @@ BEGIN
                 ELSE 3
             END,
 			CASE
-                WHEN EXTRACT(MONTH FROM v_current_date) BETWEEN 1 AND 4 THEN "1er. Cuatrimestre"
-                WHEN EXTRACT(MONTH FROM v_current_date) BETWEEN 5 AND 8 THEN "2do. Cuatrimestre"
-                ELSE "3er. Cuatrimestre"
+                WHEN EXTRACT(MONTH FROM v_current_date) BETWEEN 1 AND 4 THEN '1er. Cuatrimestre'
+                WHEN EXTRACT(MONTH FROM v_current_date) BETWEEN 5 AND 8 THEN '2do. Cuatrimestre'
+                ELSE '3er. Cuatrimestre'
             END,
             CASE
                 WHEN EXTRACT(MONTH FROM v_current_date) BETWEEN 1 AND 3 THEN 1
                 WHEN EXTRACT(MONTH FROM v_current_date) BETWEEN 4 AND 6 THEN 2
                 WHEN EXTRACT(MONTH FROM v_current_date) BETWEEN 7 AND 9 THEN 3
                 ELSE 4
-            END,,
+            END,
             CASE
-                WHEN EXTRACT(MONTH FROM v_current_date) BETWEEN 1 AND 3 THEN "1er. Trimestre"
-                WHEN EXTRACT(MONTH FROM v_current_date) BETWEEN 4 AND 6 THEN "2do. Trimestre"
-                WHEN EXTRACT(MONTH FROM v_current_date) BETWEEN 7 AND 9 THEN "3er. Trimestre"
-                ELSE "4to. Trimestre"
+                WHEN EXTRACT(MONTH FROM v_current_date) BETWEEN 1 AND 3 THEN '1er. Trimestre'
+                WHEN EXTRACT(MONTH FROM v_current_date) BETWEEN 4 AND 6 THEN '2do. Trimestre'
+                WHEN EXTRACT(MONTH FROM v_current_date) BETWEEN 7 AND 9 THEN '3er. Trimestre'
+                ELSE '4to. Trimestre'
             END,
             CASE
                 WHEN EXTRACT(MONTH FROM v_current_date) IN (1, 2) THEN 1
@@ -708,18 +759,42 @@ BEGIN
                 ELSE 6
             END,
             CASE
-                WHEN EXTRACT(MONTH FROM v_current_date) IN (1, 2) THEN "1er. Bimestre"
-                WHEN EXTRACT(MONTH FROM v_current_date) IN (3, 4) THEN "2do. bimestre"
-                WHEN EXTRACT(MONTH FROM v_current_date) IN (5, 6) THEN "3er. bimestre"
-                WHEN EXTRACT(MONTH FROM v_current_date) IN (7, 8) THEN "4to. bimestre"
-                WHEN EXTRACT(MONTH FROM v_current_date) IN (9, 10) THEN "5to. bimestre"
-                ELSE "6to. bimestre"
+                WHEN EXTRACT(MONTH FROM v_current_date) IN (1, 2) THEN '1er. Bimestre'
+                WHEN EXTRACT(MONTH FROM v_current_date) IN (3, 4) THEN '2do. bimestre'
+                WHEN EXTRACT(MONTH FROM v_current_date) IN (5, 6) THEN '3er. bimestre'
+                WHEN EXTRACT(MONTH FROM v_current_date) IN (7, 8) THEN '4to. bimestre'
+                WHEN EXTRACT(MONTH FROM v_current_date) IN (9, 10) THEN '5to. bimestre'
+                ELSE '6to. bimestre'
             END,
             EXTRACT(DAY FROM v_current_date),
             EXTRACT(MONTH FROM v_current_date),
-            TO_CHAR(v_current_date, 'Month'),
-            EXTRACT(WEEK FROM v_current_date),
-            TO_CHAR(v_current_date, 'Day'),
+            CASE EXTRACT(MONTH FROM v_current_date)  
+				WHEN 1 THEN 'Enero'
+				WHEN 2 THEN 'Febrero'
+				WHEN 3 THEN 'Marzo'
+				WHEN 4 THEN 'Abril'
+				WHEN 5 THEN 'Mayo'
+				WHEN 6 THEN 'Junio'
+				WHEN 7 THEN 'Julio'
+				WHEN 8 THEN 'Agosto'
+				WHEN 9 THEN 'Septiembre'
+				WHEN 10 THEN 'Octubre'
+				WHEN 11 THEN 'Noviembre'
+				WHEN 12 THEN 'Diciembre'
+            END, 
+            CASE EXTRACT(DOW FROM v_current_date)
+				WHEN 0 THEN 7
+				ELSE EXTRACT(DOW FROM v_current_date)
+			END,
+            CASE EXTRACT(DOW FROM v_current_date)
+				WHEN 0 THEN 'Domingo'
+				WHEN 1 THEN 'Lunes'
+				WHEN 2 THEN 'Martes'
+				WHEN 3 THEN 'Miércoles'
+				WHEN 4 THEN 'Jueves'
+				WHEN 5 THEN 'Viernes'
+				WHEN 6 THEN 'Sábado'
+			END,
             CASE
                 WHEN EXTRACT(MONTH FROM v_current_date) IN (12, 1, 2) THEN 'Verano'
                 WHEN EXTRACT(MONTH FROM v_current_date) IN (3, 4, 5) THEN 'Otoño'
@@ -731,8 +806,18 @@ BEGIN
                 ELSE 'Día de Semana'
             END, */
 			'Dia Laborable',
-            EXTRACT(WEEK FROM v_current_date) - EXTRACT(WEEK FROM DATE_TRUNC('month', v_current_date)) + 1,
-            EXTRACT(WEEK FROM v_current_date)
+            EXTRACT(WEEK FROM v_current_date) - CASE 
+				WHEN EXTRACT(WEEK FROM v_current_date) - EXTRACT(WEEK FROM DATE_TRUNC('month', v_current_date)) < 0 THEN 0
+				ELSE EXTRACT(WEEK FROM DATE_TRUNC('month', v_current_date))
+			END + 1,
+			'Semana ' || 
+			(EXTRACT(WEEK FROM v_current_date) - CASE 
+				WHEN EXTRACT(WEEK FROM v_current_date) - EXTRACT(WEEK FROM DATE_TRUNC('month', v_current_date)) < 0 THEN 0
+				ELSE EXTRACT(WEEK FROM DATE_TRUNC('month', v_current_date))
+			END + 1)
+			|| ' del mes',
+            EXTRACT(WEEK FROM v_current_date),
+			'Semana ' || EXTRACT(WEEK FROM v_current_date) || ' del año'
         );
         -- Incrementar la fecha en un día
         v_current_date := v_current_date + 1;
