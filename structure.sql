@@ -1,3 +1,13 @@
+-------------------------------------------------------------------
+-------------------------------------------------------------------
+---------------------------- TABLES -------------------------------
+-------------------------------------------------------------------
+-------------------------------------------------------------------
+
+-------------------------------------------------------------------
+--------------------------- DIMENSIONS ----------------------------
+-------------------------------------------------------------------
+
 CREATE EXTENSION IF NOT EXISTS dblink;
 
 CREATE TABLE IF NOT EXISTS public.health_entity_dim
@@ -89,29 +99,10 @@ CREATE TABLE IF NOT EXISTS public.time_dim
     CONSTRAINT time_dim_pkey PRIMARY KEY (time_dim_id)
 );
 
-
-CREATE TABLE IF NOT EXISTS Site_Dim(
-			 office_id_Dim   BIGSERIAL  primary key NOT NULL,
-			 office_id bigint NOT NULL,
-			 address character varying NOT NULL,
-			 name character varying NOT NULL,
-			 site bigint NOT NULL,
-			 timestamp_from TIMESTAMPTZ NOT NULL,
-			 timestamp_to   TIMESTAMPTZ NOT NULL 
-)
-
-
-
-CREATE TABLE IF NOT EXISTS source_dimension(
-	source_id bigint primary key NOT NULL,
-	description character varying COLLATE pg_catalog."default" NOT NULL,
-	timestamp_from TIMESTAMPTZ NOT NULL,
-    timestamp_to   TIMESTAMPTZ NOT NULL 
-)
-
 CREATE OR REPLACE VIEW public.period_dim
  AS
  SELECT min(time_dim_id) AS period_dim_id,
+    min(date) AS period_date,
     year,
     month,
     month_name,
@@ -130,6 +121,105 @@ CREATE TABLE IF NOT EXISTS public.age_dim
     CONSTRAINT age_dim_pkey PRIMARY KEY (age_dim_id)
 );
 
+CREATE TABLE IF NOT EXISTS public.office_dim(
+			 office_dim_id bigserial primary key NOT NULL,
+			 office_id bigint NOT NULL,
+			 address character varying COLLATE pg_catalog."default" NOT NULL,
+			 name character varying COLLATE pg_catalog."default" NOT NULL,
+			 city character varying COLLATE pg_catalog."default" NOT NULL,
+			 department character varying COLLATE pg_catalog."default" NOT NULL,
+			 province character varying COLLATE pg_catalog."default" NOT NULL,
+			 country character varying COLLATE pg_catalog."default" NOT NULL,
+			 site bigint NOT NULL,
+			 timestamp_from timestamp with time zone NOT NULL,
+			 timestamp_to   timestamp with time zone NOT NULL 
+);
+
+
+
+CREATE TABLE IF NOT EXISTS public.source_dim(
+	source_dim_id bigserial primary key NOT NULL,
+	source_id bigint NOT NULL,
+	description character varying COLLATE pg_catalog."default" NOT NULL
+);
+
+-------------------------------------------------------------------
+----------------------------- FACTS -------------------------------
+-------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS public.benefit_order_detail_fact
+(
+    benefit_order_detail_fact_id bigint NOT NULL DEFAULT nextval('benefit_order_detail_fact_benefit_order_detail_fact_id_seq'::regclass),
+    benefit_order_detail_id bigint NOT NULL,
+    benefit_order_id bigint NOT NULL,
+    date_id bigint NOT NULL,
+    professional_dim_id bigint NOT NULL,
+    patient_dim_id bigint NOT NULL,
+    office_dim_id bigint NOT NULL,
+    health_entity_dim_id bigint NOT NULL,
+    nomenclator_dim_id bigint NOT NULL,
+    patient_age_id bigint NOT NULL,
+    invoiced_amount numeric NOT NULL,
+    quantity integer NOT NULL,
+    piece_face_sector_id bigint NOT NULL,
+    source_dim_id bigint NOT NULL,
+    period_dim_id bigint NOT NULL,
+    CONSTRAINT benefit_order_detail_fact_pkey PRIMARY KEY (benefit_order_detail_fact_id),
+    CONSTRAINT benefit_order_detail_fact_date_id_fkey FOREIGN KEY (date_id)
+        REFERENCES public.time_dim (time_dim_id) MATCH SIMPLE
+        ON UPDATE NO ACTION
+        ON DELETE NO ACTION
+        NOT VALID,
+    CONSTRAINT benefit_order_detail_fact_health_entity_dim_id_fkey FOREIGN KEY (health_entity_dim_id)
+        REFERENCES public.health_entity_dim (health_entity_dim_id) MATCH SIMPLE
+        ON UPDATE NO ACTION
+        ON DELETE NO ACTION,
+    CONSTRAINT benefit_order_detail_fact_nomenclator_dim_id_fkey FOREIGN KEY (nomenclator_dim_id)
+        REFERENCES public.nomenclator_dim (nomenclator_dim_id) MATCH SIMPLE
+        ON UPDATE NO ACTION
+        ON DELETE NO ACTION,
+    CONSTRAINT benefit_order_detail_fact_office_dim_id_fkey FOREIGN KEY (office_dim_id)
+        REFERENCES public.office_dim (office_dim_id) MATCH SIMPLE
+        ON UPDATE NO ACTION
+        ON DELETE NO ACTION,
+    CONSTRAINT benefit_order_detail_fact_patient_age_id_fkey FOREIGN KEY (patient_age_id)
+        REFERENCES public.age_dim (age_dim_id) MATCH SIMPLE
+        ON UPDATE NO ACTION
+        ON DELETE NO ACTION
+        NOT VALID,
+    CONSTRAINT benefit_order_detail_fact_patient_dim_id_fkey FOREIGN KEY (patient_dim_id)
+        REFERENCES public.patient_dim (patient_dim_id) MATCH SIMPLE
+        ON UPDATE NO ACTION
+        ON DELETE NO ACTION,
+    CONSTRAINT benefit_order_detail_fact_period_dim_id_fkey FOREIGN KEY (period_dim_id)
+        REFERENCES public.time_dim (time_dim_id) MATCH SIMPLE
+        ON UPDATE NO ACTION
+        ON DELETE NO ACTION
+        NOT VALID,
+    CONSTRAINT benefit_order_detail_fact_piece_face_sector_id_fkey FOREIGN KEY (piece_face_sector_id)
+        REFERENCES public.piece_face_sector_dim (piece_face_sector_id) MATCH SIMPLE
+        ON UPDATE NO ACTION
+        ON DELETE NO ACTION
+        NOT VALID,
+    CONSTRAINT benefit_order_detail_fact_professional_dim_id_fkey FOREIGN KEY (professional_dim_id)
+        REFERENCES public.professional_dim (professional_dim_id) MATCH SIMPLE
+        ON UPDATE NO ACTION
+        ON DELETE NO ACTION,
+    CONSTRAINT benefit_order_detail_fact_source_dim_id_fkey FOREIGN KEY (source_dim_id)
+        REFERENCES public.source_dim (source_dim_id) MATCH SIMPLE
+        ON UPDATE NO ACTION
+        ON DELETE NO ACTION
+);
+
+-------------------------------------------------------------------
+-------------------------------------------------------------------
+-------------------------- PROCEDURES -----------------------------
+-------------------------------------------------------------------
+-------------------------------------------------------------------
+
+-------------------------------------------------------------------
+-------------------------- DIMENSIONS -----------------------------
+-------------------------------------------------------------------
 
 CREATE OR REPLACE PROCEDURE public.load_health_entity_dim(
 	IN p_username character varying,
@@ -166,7 +256,7 @@ BEGIN
 			 JOIN comphealthentitydata ched ON ched.healthentity = me.medereentity
 			 JOIN comphealthentityclass chec ON chec.comphealthentityclass = ched.comphealthentityclass
 			 JOIN healthentityplan hep ON hep.healthentity = me.medereentity
-			 WHERE me.medereentitytype = 6 AND me.deleted IS NULL'
+			 WHERE me.medereentitytype = 6'
 		) AS t(
 			health_entity_id bigint,
 			commercial_name character varying, 
@@ -180,6 +270,18 @@ BEGIN
 		p_username, p_password, p_dbname
 	);
 
+	IF NOT EXISTS(
+		SELECT 1
+		FROM health_entity_dim
+		WHERE health_entity_dim_id = -1
+	) THEN
+		/* Inserta registro 'desconocido' */
+		INSERT INTO health_entity_dim(
+			 health_entity_dim_id, health_entity_id, commercial_name, code, invoicing_type, plan, site, timestamp_from, timestamp_to, plan_id
+		)
+		VALUES(-1, -1, 'Desconocido', 'Desconocido', 'Desconocido', 'Desconocido', -1, '1900-01-01', '9999-12-31', -1);
+	END IF;
+	
 	timestamp_now := now();
 
 	/* Cierre de versiones anteriores cuando cambian los datos */
@@ -283,7 +385,6 @@ BEGIN
 			JOIN medereentity he ON he.medereentity = n.healthentity AND he.deleted IS NULL
 			LEFT JOIN chaptercategoryrelation ccr ON ccr.nomenclatorchapter = n.nomenclatorchapter
 			LEFT JOIN chaptercategory cc ON cc.chaptercategory = ccr.chaptercategory
-			WHERE n.active = true
 			'
 		) AS t(
 			nomenclator_id bigint,
@@ -297,6 +398,18 @@ BEGIN
 		$sql$,
 		p_username, p_password, p_dbname
 	);
+
+	IF NOT EXISTS(
+		SELECT 1
+		FROM nomenclator_dim
+		WHERE nomenclator_dim_id = -1
+	) THEN
+		/* Inserta registro 'desconocido' */
+		INSERT INTO nomenclator_dim(
+			nomenclator_dim_id, nomenclator_id, description, code, chapter, category, health_entity, site, timestamp_from, timestamp_to
+		)
+		VALUES(-1, -1, 'Desconocido', 'Desconocido', 'Desconocido', 'Desconocido', 'Desconocido', -1, '1900-01-01', '9999-12-31');
+	END IF;
 
 	timestamp_now := now();
 
@@ -386,7 +499,6 @@ CREATE OR REPLACE PROCEDURE public.load_piece_face_sector_dim(
 	)
 LANGUAGE 'plpgsql'
 AS $BODY$
-
 DECLARE
     v_piece INT;
     v_sector TEXT;
@@ -457,6 +569,7 @@ BEGIN
         SELECT v_piece, array_to_string(combo, ''), 'Sin sector'
         FROM combinations;
     END LOOP;
+	RAISE NOTICE 'Carga de la dimension "piece_face_sector_dim" completada.';
 END;
 $BODY$;
 
@@ -488,7 +601,7 @@ BEGIN
 				COALESCE(me.gender, ''Desconocido''),
 				me.site
 		 	FROM medereentity me
-		 	WHERE me.medereentitytype = 2 AND me.deleted IS NULL'
+		 	WHERE me.medereentitytype = 2'
 		) AS t(
 			patient_id bigint,
 			first_name character varying, 
@@ -500,6 +613,23 @@ BEGIN
 		p_username, p_password, p_dbname
 	);
 
+	/* Inserta registro 'desconocido' */
+	IF NOT EXISTS(
+		SELECT 1
+		FROM patient_dim
+		WHERE patient_dim_id = -1
+	) THEN
+		INSERT INTO patient_dim(
+			patient_dim_id,
+			patient_id,
+			first_name,
+			last_name,
+			gender,
+			site
+		)
+		VALUES(-1, -1, 'Desconocido', 'Desconocido', 'Desconocido', -1);
+	END IF;
+		
 	/* Actualiza los atributos lentamente cambiantes de tipo 1 */
 	UPDATE patient_dim pd
 	SET
@@ -514,7 +644,7 @@ BEGIN
 		);
 	GET DIAGNOSTICS updated_records = ROW_COUNT;
 
-	/* Inserción de nuevas versiones para registros cambiados */
+	/* Inserción de nuevos registros */
 	INSERT INTO patient_dim(patient_id, first_name, last_name, gender, site)
 	SELECT
 		tpd.patient_id,
@@ -564,11 +694,11 @@ BEGIN
 				COALESCE(me.firstname, ''Desconocido''), 
 				COALESCE(me.lastname, ''Desconocido''), 
 				COALESCE(me.gender, ''Desconocido''), 
-				me.workerenrollment,
-				me.enrollmenttype,
+				COALESCE(me.workerenrollment,''Desconocido''),
+				COALESCE(me.enrollmenttype,''Desconocido''),
 				me.site
 		 	FROM medereentity me
-		 	WHERE me.medereentitytype = 3 AND me.deleted IS NULL'
+		 	WHERE me.medereentitytype = 3'
 		) AS t(
 			professional_id bigint,
 			first_name character varying, 
@@ -581,6 +711,25 @@ BEGIN
 		$sql$,
 		p_username, p_password, p_dbname
 	);
+
+	IF NOT EXISTS(
+		SELECT 1
+		FROM professional_dim
+		WHERE professional_dim_id = -1
+	) THEN
+		/* Inserta registro 'desconocido' */
+		INSERT INTO professional_dim(
+			professional_dim_id,
+			professional_id,
+			first_name,
+			last_name,
+			gender,
+			license_number,
+			license_type,
+			site
+		)
+		VALUES(-1, -1, 'Desconocido', 'Desconocido', 'Desconocido', 'Desconocido', 'Desconocido', -1);
+	END IF;
 
 	/* Actualiza los atributos lentamente cambiantes de tipo 1 */
 	UPDATE professional_dim pd
@@ -640,6 +789,16 @@ BEGIN
         RAISE NOTICE 'La tabla "age_dim" ya contiene datos. SP abortado.';
         RETURN;
     END IF;
+
+	/* Inserta registro 'desconocido' */
+	INSERT INTO age_dim(
+		age_dim_id,
+		age,
+		range_5,
+		range_10,
+		life_stage
+	)
+	VALUES(-1, -1, 'Desconocido', 'Desconocido', 'Desconocido');
 
     -- Bucle para insertar edades de 0 a 100
     FOR v_age IN 0..100 LOOP
@@ -706,19 +865,56 @@ AS $$
 
 DECLARE
     v_count INTEGER;
-    v_start_date DATE := '2020-01-01';
+    v_start_date DATE := '2019-12-01';
     v_end_date DATE := '2050-12-31';
     v_current_date DATE;
-BEGIN
-	-- Configurar el idioma para obtener nombres en español
-    SET lc_time = 'es_ES.UTF-8'; 
-	
-    -- Verificar si la tabla ya tiene datos. Si es así, salir.
+BEGIN	
+    -- Verifica si la tabla ya tiene datos. Si es así, salir.
     SELECT COUNT(*) INTO v_count FROM time_dim;
     IF v_count > 0 THEN
         RAISE NOTICE 'La tabla "time_dim" ya contiene datos. SP abortado.';
         RETURN;
     END IF;
+
+	/* Inserta registro 'desconocido' */
+	INSERT INTO time_dim(
+		time_dim_id,
+		date,
+		date_name,
+		year,
+		four_month_period,
+		four_month_period_name,
+		three_month_period,
+		three_month_period_name,
+		two_month_period,
+		two_month_period_name,
+		day,
+		month,
+		month_name,
+		weekday,
+		weekday_name,
+		season,
+		type_day,
+		week_of_the_month,
+		week_of_the_month_name,
+		week_of_the_year,
+		week_of_the_year_name
+	)
+	VALUES(
+		-1, 
+		'1900-01-01', 
+		'Desconocido', 
+		-1,
+		-1, 'Desconocido', 
+		-1, 'Desconocido', 
+		-1, 'Desconocido', 
+		-1, 
+		-1, 'Desconocido', 
+		-1, 'Desconocido',
+		'Desconocido',
+		'Desconocido', 
+		-1, 'Desconocido', 
+		-1, 'Desconocido');
 
     -- Bucle para insertar cada día en el rango de fechas
     v_current_date := v_start_date;
@@ -839,148 +1035,200 @@ BEGIN
             EXTRACT(WEEK FROM v_current_date),
 			'Semana ' || EXTRACT(WEEK FROM v_current_date) || ' del año'
         );
-        -- Incrementar la fecha en un día
+        -- Incrementa la fecha en un día
         v_current_date := v_current_date + 1;
     END LOOP;
+	RAISE NOTICE 'Carga de la dimension "time_dim" completada.';
 END;
 $$;
 
 
-CREATE OR REPLACE PROCEDURE public.load_site(IN p_username character varying, IN p_password character varying, IN p_dbname character varying)
+CREATE OR REPLACE PROCEDURE public.load_office_dim(IN p_username character varying, IN p_password character varying, IN p_dbname character varying)
     LANGUAGE 'plpgsql'
     
 AS $BODY$
 DECLARE
 	timestamp_now timestamp with time zone;
+	new_records bigint;
+	new_version_records bigint;
 BEGIN
-	DROP TABLE IF EXISTS temp_site;
+	DROP TABLE IF EXISTS temp_office_dim;
 	
-	-- Cargamos staging usando dblink con parámetros dinámicos
-EXECUTE format(
+	EXECUTE format(
 		$sql$
-		CREATE TEMP TABLE temp_Site AS
+		CREATE TEMP TABLE temp_office_dim AS
 		SELECT *
 		FROM dblink(
 			'host=localhost user=%I  password=%s dbname=%s',
 			'SELECT 
-					s.site,
-					s.companyaddress,
-					s.companyname,
-					s.parentsite
+				s.site,
+				COALESCE(s.companyaddress, ''Desconocido''),
+				COALESCE(s.companyname, ''Desconocido''),
+				COALESCE(ci18n.description, ''Desconocido''),
+				COALESCE(di18n.description, ''Desconocido''),
+				COALESCE(pi18n.description, ''Desconocido''),
+				COALESCE(coi18n.description, ''Desconocido''),
+				s.parentsite
 			 FROM site s
-			 WHERE s.active = TRUE
-			 AND s.initialized = TRUE
-			 and  s.parentsite IS NOT NULL'
+			 LEFT JOIN city c ON c.city = s.city
+			 LEFT JOIN cityi18n ci18n ON ci18n.city = c.city AND ci18n.language = 1
+			 LEFT JOIN department d ON d.department = c.department
+			 LEFT JOIN departmenti18n di18n ON di18n.department = d.department AND di18n.language = 1
+			 LEFT JOIN province p ON p.province = d.province
+			 LEFT JOIN provincei18n pi18n ON pi18n.province = p.province AND pi18n.language = 1
+			 LEFT JOIN country co ON co.country = p.country
+			 LEFT JOIN countryi18n coi18n ON coi18n.country = co.country AND coi18n.language = 1
+			 WHERE s.parentsite IS NOT NULL'
 		) AS t(
 			 office_id bigint,
 			 address character varying,
 			 name character varying,
+			 city character varying,
+			 department character varying,
+			 province character varying,
+			 country character varying,
 			 site bigint
 		)
 		$sql$,
 		p_username, p_password, p_dbname
 	);
 
-
+	IF NOT EXISTS(
+		SELECT 1
+		FROM office_dim
+		WHERE office_dim_id = -1
+	) THEN
+		/* Inserta registro 'desconocido' */
+		INSERT INTO office_dim(
+			office_dim_id,
+			office_id,
+			address,
+			name,
+			city,
+			department,
+			province,
+			country,
+			site,
+			timestamp_from,
+			timestamp_to
+		)
+		VALUES(-1, -1, 'Desconocido', 'Desconocido', 'Desconocido', 'Desconocido', 'Desconocido', 'Desconocido', -1, '1900-01-01', '9999-12-31');
+	END IF;
+	
     timestamp_now := now();
 
 	/* Cierre de versiones anteriores cuando cambian los datos */
-		UPDATE Site_Dim sd
-		SET timestamp_to = timestamp_now
-		FROM temp_Site ts
-		WHERE sd.office_id = ts.office_id
-		  AND sd.timestamp_to = '9999-12-31'
-		  AND (
-				sd.Name      <> ts.name OR
-				sd.Address   <> ts.Address OR
-				sd.site   <> ts.site
-			  );
-
-
-
-
+	UPDATE office_dim od
+	SET timestamp_to = timestamp_now
+	FROM temp_office_dim tod
+	WHERE od.office_id = tod.office_id
+		AND od.timestamp_to = '9999-12-31'
+		AND (
+			od.name <> tod.name OR
+			od.address <> tod.address OR
+			od.city <> tod.city OR
+			od.department <> tod.department OR
+			od.province <> tod.province OR
+			od.country <> tod.country
+		);
 
 	/* Inserción de nuevas versiones para registros cambiados */
-		INSERT INTO Site_Dim (
-							    office_id,
-							    Address,
-							    Name,
-							    site,
-							    timestamp_from,
-							    timestamp_to
-					)
-		SELECT
-    		ts.office_id,
-		    ts.Address,
-		    ts.Name,
-		    ts.site,
-		    timestamp_now AS timestamp_from,
-		    '9999-12-31' AS timestamp_to
-		FROM temp_Site ts
-		WHERE EXISTS (
-		    SELECT 1
-		    FROM Site_Dim sd
-		    WHERE sd.office_id = ts.office_id
-		      AND sd.timestamp_to = timestamp_now
-			  AND (
-				sd.name      <> ts.Name OR
-				sd.Address   <> ts.Address OR
-				sd.site   <> ts.site
-			  )
+	INSERT INTO office_dim (
+		office_id,
+		address,
+		name,
+		city,
+		department,
+		province,
+		country,
+		site,
+		timestamp_from,
+		timestamp_to
+	)
+	SELECT
+		tod.office_id,
+		tod.address,
+		tod.name,
+		tod.city,
+		tod.department,
+		tod.province,
+		tod.country,
+		tod.site,
+		timestamp_now AS timestamp_from,
+		'9999-12-31' AS timestamp_to
+	FROM temp_office_dim tod
+	WHERE EXISTS (
+		SELECT 1
+		FROM office_dim od
+		WHERE od.office_id = tod.office_id
+			AND od.timestamp_to = timestamp_now -- recién cerrado
+			AND (
+				od.name <> tod.name OR
+				od.address <> tod.address OR
+				od.city <> tod.city OR
+				od.department <> tod.department OR
+				od.province <> tod.province OR
+				od.country <> tod.country
+			)
 
-		);
-
-		 
-
+	);
+	GET DIAGNOSTICS new_version_records = ROW_COUNT;
 
 
-		 /* Inserción de registros nuevos */
-		INSERT INTO Site_Dim (
-							    office_id,
-							    Address,
-							    Name,
-							    site,
-							    timestamp_from,
-							    timestamp_to
-					)
-		SELECT
-		    ts.office_id,
-		    ts.Address,
-		    ts.Name,
-		    ts.site,
-		    timestamp_now AS timestamp_from,
-		    '9999-12-31' AS timestamp_to
-		FROM temp_Site ts
-		WHERE NOT EXISTS (
-		    SELECT 1
-		    FROM Site_Dim sd
-		    WHERE sd.office_id = ts.office_id
-		);
-		
+	/* Inserción de registros nuevos */
+	INSERT INTO office_dim (
+		office_id,
+		address,
+		name,
+		city,
+		department,
+		province,
+		country,
+		site,
+		timestamp_from,
+		timestamp_to
+	)
+	SELECT
+		tod.office_id,
+		tod.address,
+		tod.name,
+		tod.city,
+		tod.department,
+		tod.province,
+		tod.country,
+		tod.site,
+		'1900-01-01' AS timestamp_from,
+		'9999-12-31' AS timestamp_to
+	FROM temp_office_dim tod
+	WHERE NOT EXISTS (
+		SELECT 1
+		FROM office_dim od
+		WHERE od.office_id = tod.office_id
+	);
+	GET DIAGNOSTICS new_records = ROW_COUNT;
+
+	-- Reporte al operador
+	RAISE NOTICE '';
+	RAISE NOTICE 'OFFICE_DIM RESULTS:';
+    RAISE NOTICE 'Cantidad de consultorios con nueva versión (SCD2): %', new_version_records;
+    RAISE NOTICE 'Cantidad de consultorios nuevos: %', new_records;
 END
-	$BODY$;
-	call load_site('postgres','1234','circuloProfesional')
-
-
-
+$BODY$;
 	
 
-
-call load_source('postgres','1234','circuloProfesional')
-
-CREATE OR REPLACE PROCEDURE public.load_source(IN p_username character varying, IN p_password character varying, IN p_dbname character varying)
+CREATE OR REPLACE PROCEDURE public.load_source_dim(IN p_username character varying, IN p_password character varying, IN p_dbname character varying)
     LANGUAGE 'plpgsql'
     
 AS $BODY$
 DECLARE
-	timestamp_now timestamp with time zone;
+	new_records bigint;
+	updated_records bigint;
 BEGIN
-	DROP TABLE IF EXISTS temp_source;
+	DROP TABLE IF EXISTS temp_source_dim;
 	
-	-- Cargamos staging usando dblink con parámetros dinámicos
-EXECUTE format(
+	EXECUTE format(
 		$sql$
-		CREATE TEMP TABLE temp_Source AS
+		CREATE TEMP TABLE temp_source_dim AS
 		SELECT *
 		FROM dblink(
 			'host=localhost user=%I  password=%s dbname=%s',
@@ -996,72 +1244,272 @@ EXECUTE format(
 		p_username, p_password, p_dbname
 	);
 
+	IF NOT EXISTS(
+		SELECT 1
+		FROM source_dim
+		WHERE source_dim_id = -1
+	) THEN
+		/* Inserta registro 'desconocido' */
+		INSERT INTO source_dim(
+			source_dim_id,
+			source_id,
+			description
+		)
+		VALUES(-1, -1, 'Desconocido');
+	END IF;
 
-    timestamp_now := now();
-
-	/* Cierre de versiones anteriores cuando cambian los datos */
-		UPDATE source_Dimension sd
-		SET timestamp_to = timestamp_now
-		FROM temp_Source ts
-		WHERE sd.source_id = ts.source_id
-		  AND sd.timestamp_to = '9999-12-31'
-		  AND (
-				sd.description      <> ts.description
-			  );
-
-
-
-
-
-	/* Inserción de nuevas versiones para registros cambiados */
-		INSERT INTO Source_Dimension (
-							    source_id,
-							    description,
-							    timestamp_from,
-							    timestamp_to
-					)
-		SELECT
-    		ts.source_id,
-		    ts.description,
-		    timestamp_now AS timestamp_from,
-		    '9999-12-31' AS timestamp_to
-		FROM temp_Source ts
-		WHERE EXISTS (
-		    SELECT 1
-		    FROM Source_Dimension sd
-		    WHERE sd.source_id = ts.source_id
-		      AND sd.timestamp_to = timestamp_now
-			  AND (
-				sd.description      <> ts.description
-			  )
-
-		);
-
-		 
+	/* Actualiza los atributos lentamente cambiantes de tipo 1 */
+	UPDATE source_dim sd
+	SET description = tsd.description
+	FROM temp_source_dim tsd
+	WHERE sd.source_id = tsd.source_id
+		AND (
+			sd.description <> tsd.description
+		);	 
+	GET DIAGNOSTICS updated_records = ROW_COUNT;
 
 
+	/* Inserción de registros nuevos */
+	INSERT INTO source_dim (
+		source_id,
+		description
+	)
+	SELECT
+		tsd.source_id,
+		tsd.description
+	FROM temp_source_dim tsd
+	WHERE NOT EXISTS (
+		SELECT 1
+		FROM source_dim sd
+		WHERE sd.source_id = tsd.source_id
+	);
+	GET DIAGNOSTICS new_records = ROW_COUNT;
 
-		 /* Inserción de registros nuevos */
-		INSERT INTO Source_Dimension (
-							    source_id,
-							    description,
-							    timestamp_from,
-							    timestamp_to
-					)
-		SELECT
-		    ts.source_id,
-		    ts.description,
-		    timestamp_now AS timestamp_from,
-		    '9999-12-31' AS timestamp_to
-		FROM temp_Source ts
-		WHERE NOT EXISTS (
-		    SELECT 1
-		    FROM Source_Dimension sd
-		    WHERE sd.source_id = ts.source_id
-		);
-		
+	-- Reporte al operador
+	RAISE NOTICE '';
+	RAISE NOTICE 'SOURCE_DIM RESULTS:';
+	RAISE NOTICE 'Cantidad de orígenes actualizados (SCD1): %', updated_records;
+    RAISE NOTICE 'Cantidad de orígenes nuevos: %', new_records;
 END
-	$BODY$;
+$BODY$;
+
+
+-------------------------------------------------------------------
+----------------------------- FACTS -------------------------------
+-------------------------------------------------------------------
+
+CREATE OR REPLACE PROCEDURE public.load_benefit_order_detail_fact(
+	IN p_username character varying,
+	IN p_password character varying,
+	IN p_dbname character varying)
+LANGUAGE 'plpgsql'
+AS $BODY$
+DECLARE
+	new_records bigint;
+	invalid_records bigint;
+BEGIN
+	DROP TABLE IF EXISTS temp_benefit_order_detail_fact;
+	
+	EXECUTE format(
+		$sql$
+		CREATE TEMP TABLE temp_benefit_order_detail_fact AS
+		SELECT *
+		FROM dblink(
+			'host=localhost user=postgres password=1234 dbname=OLTP',
+			'SELECT 
+				bod.benefitorderdetail,
+				bod.benefitorder,
+				COALESCE(bod.date, ''1900-01-01''),
+				COALESCE(bodp.professional,-1),
+				COALESCE(hpc.patient,-1),
+				COALESCE(s.site,-1),
+				COALESCE(hpc.healthentityplan,-1),
+				bod.nomenclator,
+				CASE 
+					WHEN COALESCE(EXTRACT(YEAR FROM AGE(bod.date, p.birthdate)),-1) <= 100 THEN COALESCE(EXTRACT(YEAR FROM AGE(bod.date, p.birthdate)),-1)
+					ELSE -1
+				END,
+				((bod.medicalamount - COALESCE(SUM(rir.amount),0)) / bod.quantity)::numeric(10,2),
+				bod.quantity::int,
+				
+				-- PIEZA
+				COALESCE(CASE 
+			        WHEN TRIM(bod.toothpiece) ~ ''^[0-9]+$'' -- es número
+			             AND (bod.toothpiece::int BETWEEN 1 AND 6) 
+			            THEN ''Sin pieza''
+			        WHEN TRIM(bod.toothpiece) ~ ''^[A-Za-z]+$'' -- solo letras
+			            THEN ''Sin pieza''
+			        WHEN TRIM(bod.toothpiece) = '''' -- vacío
+			            THEN ''Sin pieza''
+			        ELSE TRIM(bod.toothpiece) -- pieza válida
+			    END, ''Sin pieza''),
+
+				-- CARAS
+				COALESCE((
+				  SELECT string_agg(DISTINCT ch, '''' ORDER BY ch)
+				  FROM UNNEST(STRING_TO_ARRAY(TRIM(bod.toothface), NULL)) AS t(ch)
+				), ''Sin caras''),
+
+				-- SECTOR
+				COALESCE(CASE 
+			        WHEN TRIM(bod.toothpiece) ~ ''^[0-9]+$'' 
+			             AND (bod.toothpiece::int BETWEEN 1 AND 6) 
+			        THEN (
+			            CASE 
+			                WHEN TRIM(bod.toothpiece) = ''1'' THEN ''SD''
+			                WHEN TRIM(bod.toothpiece) = ''2'' THEN ''SA''
+			                WHEN TRIM(bod.toothpiece) = ''3'' THEN ''SI''
+			                WHEN TRIM(bod.toothpiece) = ''4'' THEN ''ID''
+			                WHEN TRIM(bod.toothpiece) = ''5'' THEN ''IA''
+			                WHEN TRIM(bod.toothpiece) = ''6'' THEN ''II''
+			                ELSE ''Sin sector''
+			            END
+			        )
+			        WHEN TRIM(bod.toothpiece) ~ ''^[A-Za-z]+$'' 
+			            THEN (
+							CASE
+								WHEN TRIM(bod.toothpiece) IN (''SD'', ''DS'') THEN ''SD''
+								WHEN REPLACE(TRIM(bod.toothpiece), ''M'', ''A'') IN (''SA'', ''AS'') THEN ''SA''
+								WHEN TRIM(bod.toothpiece) IN (''SI'', ''IS'') THEN ''SI''
+								WHEN TRIM(bod.toothpiece) IN (''ID'', ''DI'') THEN ''ID''
+								WHEN REPLACE(TRIM(bod.toothpiece), ''M'', ''A'') IN (''IA'', ''AI'') THEN ''IA''
+								ELSE TRIM(bod.toothpiece) -- II
+							END
+					) -- letras van al sector, a veces ponen IM en vez de IA
+			        WHEN TRIM(bod.toothpiece) <> '''' -- queda lo que estaba en pieza (más específico)
+			            THEN ''Sin sector''
+					WHEN TRIM(bod.toothsector) = '''' -- vacío
+						THEN ''Sin sector''
+			        ELSE (
+						CASE
+							WHEN TRIM(bod.toothsector) IN (''SD'', ''DS'') THEN ''SD''
+							WHEN REPLACE(TRIM(bod.toothsector), ''M'', ''A'') IN (''SA'', ''AS'') THEN ''SA''
+							WHEN TRIM(bod.toothsector) IN (''SI'', ''IS'') THEN ''SI''
+							WHEN TRIM(bod.toothsector) IN (''ID'', ''DI'') THEN ''ID''
+							WHEN REPLACE(TRIM(bod.toothsector), ''M'', ''A'') IN (''AI'', ''IA'') THEN ''IA''
+							ELSE TRIM(bod.toothsector) -- II
+						END
+					)
+			    END, ''Sin sector''),
+				bo.benefitoperationsource,
+				COALESCE(bo.period,''1900-01-01'')
+			FROM benefitorderdetail bod
+			JOIN benefitorder bo ON bo.benefitorder = bod.benefitorder
+			JOIN benefitoperation bop ON bop.benefitoperation = bo.benefitoperation
+			JOIN benefitorderdetailprofessional bodp ON bodp.benefitorderdetail = bod.benefitorderdetail -- un profesional por benefitorderdetail
+			JOIN nomenclator n ON n.nomenclator = bod.nomenclator
+			LEFT JOIN site s ON s.site = bop.site AND s.parentsite IS NOT NULL
+			LEFT JOIN healthpatientcoverage hpc ON hpc.healthpatientcoverage = bo.healthpatientcoverage
+			LEFT JOIN medereentity p ON p.medereentity = hpc.patient
+			LEFT JOIN reinvoicingrequest rir ON rir.benefitorderdetail = bod.benefitorderdetail AND NOT rir.nulled 
+			WHERE bod.benefitorderdetailstate IN (3,4,5,7,8,10,11) -- (Facturado, Rechazado, Refacturado, Aceptado, Liquidado, Pagado, Debitado)
+			GROUP BY 
+				bod.benefitorderdetail,
+				bod.benefitorder,
+				bod.date,
+				bodp.professional,
+				hpc.patient,
+				s.site,
+				hpc.healthentityplan,
+				bod.nomenclator,
+				p.birthdate,
+				bod.medicalamount,
+				bod.quantity,
+				bod.toothpiece,
+				bod.toothface,
+				bod.toothsector,
+				bo.benefitoperationsource,
+				bo.period
+			'
+		) AS t(
+			benefit_order_detail_id bigint,
+			benefit_order_id bigint,
+			date date, 
+			professional_id bigint,
+			patient_id bigint,
+			office_id bigint,
+			plan_id bigint,
+			nomenclator_id bigint,
+			patient_age int,
+			invoiced_amount numeric,
+			quantity int,
+			piece character varying,
+			face character varying,
+			sector character varying,
+			source_id bigint,
+			period_date date
+		)
+		$sql$,
+		p_username, p_password, p_dbname
+	);
+
+	SELECT COUNT(*) INTO invalid_records
+	FROM temp_benefit_order_detail_fact;
+
+	INSERT INTO public.benefit_order_detail_fact(
+		benefit_order_detail_id,
+		benefit_order_id,
+		date_id,
+		professional_dim_id,
+		patient_dim_id,
+		office_dim_id,
+		health_entity_dim_id,
+		nomenclator_dim_id,
+		patient_age_id,
+		invoiced_amount,
+		quantity,
+		piece_face_sector_id,
+		source_dim_id,
+		period_dim_id
+	)
+	SELECT 
+		tmp.benefit_order_detail_id,
+		tmp.benefit_order_id,
+		t.time_dim_id,
+		prof.professional_dim_id,
+		pat.patient_dim_id,
+		o.office_dim_id,
+		he.health_entity_dim_id,
+		n.nomenclator_dim_id,
+		a.age_dim_id,
+		tmp.invoiced_amount,
+		tmp.quantity,
+		pfs.piece_face_sector_id,
+		s.source_dim_id,
+		pe.period_dim_id
+	FROM temp_benefit_order_detail_fact tmp
+	JOIN time_dim t ON t.date = tmp.date
+	JOIN professional_dim prof ON prof.professional_id = tmp.professional_id
+	JOIN patient_dim pat ON pat.patient_id = tmp.patient_id
+	JOIN office_dim o ON o.office_id = tmp.office_id 
+		AND tmp.date BETWEEN o.timestamp_from AND o.timestamp_to
+	JOIN health_entity_dim he ON he.plan_id = tmp.plan_id
+		AND tmp.date BETWEEN he.timestamp_from AND he.timestamp_to
+	JOIN nomenclator_dim n ON n.nomenclator_id = tmp.nomenclator_id
+		AND tmp.date BETWEEN n.timestamp_from AND n.timestamp_to
+	JOIN age_dim a ON a.age = tmp.patient_age
+	JOIN piece_face_sector_dim pfs ON pfs.piece = tmp.piece 
+		AND pfs.faces = tmp.face
+		AND pfs.sector = tmp.sector
+	JOIN source_dim s ON s.source_id = tmp.source_id
+	JOIN period_dim pe ON pe.month = EXTRACT(MONTH FROM tmp.period_date)
+		AND pe.year = EXTRACT(YEAR FROM tmp.period_date)
+	WHERE NOT EXISTS(
+		SELECT 1
+		FROM public.benefit_order_detail_fact bodf
+		WHERE tmp.benefit_order_detail_id = bodf.benefit_order_detail_id
+	);
+	GET DIAGNOSTICS new_records = ROW_COUNT;
+
+	invalid_records := invalid_records - new_records;
+
+    -- Reporte al operador
+	RAISE NOTICE '';
+	RAISE NOTICE 'BENEFIT_ORDER_DETAL_FACT RESULTS:';
+    RAISE NOTICE 'Cantidad de prestaciones nuevas: %', new_records;
+    RAISE NOTICE 'Cantidad de prestaciones inválidas encontradas: %', invalid_records;
+END
+$BODY$;
 
 
 
