@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS public.patient_dim
     last_name character varying COLLATE pg_catalog."default" NOT NULL,
     gender character varying COLLATE pg_catalog."default" NOT NULL,
     site bigint NOT NULL,
+    full_name character varying COLLATE pg_catalog."default" NOT NULL,
     CONSTRAINT patient_dim_pkey PRIMARY KEY (patient_dim_id)
 );
 
@@ -67,9 +68,10 @@ CREATE TABLE IF NOT EXISTS public.professional_dim
     first_name character varying COLLATE pg_catalog."default" NOT NULL,
     last_name character varying COLLATE pg_catalog."default" NOT NULL,
     gender character varying COLLATE pg_catalog."default" NOT NULL,
-	license_number character varying COLLATE pg_catalog."default" NOT NULL,
-	license_type character varying COLLATE pg_catalog."default" NOT NULL,
+    license_number character varying COLLATE pg_catalog."default" NOT NULL,
+    license_type character varying COLLATE pg_catalog."default" NOT NULL,
     site bigint NOT NULL,
+    full_name character varying COLLATE pg_catalog."default" NOT NULL,
     CONSTRAINT professional_dim_pkey PRIMARY KEY (professional_dim_id)
 );
 
@@ -90,12 +92,13 @@ CREATE TABLE IF NOT EXISTS public.time_dim
     month_name character varying COLLATE pg_catalog."default" NOT NULL,
     weekday integer NOT NULL,
     weekday_name character varying COLLATE pg_catalog."default" NOT NULL,
-    season character varying COLLATE pg_catalog."default" NOT NULL,
+    season_name character varying COLLATE pg_catalog."default" NOT NULL,
     type_day character varying COLLATE pg_catalog."default" NOT NULL,
     week_of_the_month integer NOT NULL,
     week_of_the_month_name character varying COLLATE pg_catalog."default" NOT NULL,
     week_of_the_year integer NOT NULL,
     week_of_the_year_name character varying COLLATE pg_catalog."default" NOT NULL,
+    season bigint NOT NULL,
     CONSTRAINT time_dim_pkey PRIMARY KEY (time_dim_id)
 );
 
@@ -106,7 +109,7 @@ CREATE OR REPLACE VIEW public.period_dim
     year,
     month,
     month_name,
-    to_char(make_date(year, month, 1)::timestamp with time zone, 'mm/yyyy'::text) AS period_name
+    to_char(min(date)::timestamp with time zone, 'mm/yyyy'::text) AS period_name
    FROM time_dim td
   GROUP BY year, month, month_name
   ORDER BY (min(time_dim_id));
@@ -117,22 +120,24 @@ CREATE TABLE IF NOT EXISTS public.age_dim
     age integer NOT NULL,
     range_5 character varying COLLATE pg_catalog."default" NOT NULL,
     range_10 character varying COLLATE pg_catalog."default" NOT NULL,
-    life_stage character varying COLLATE pg_catalog."default" NOT NULL,
+    life_stage_name character varying COLLATE pg_catalog."default" NOT NULL,
+    life_stage bigint NOT NULL,
     CONSTRAINT age_dim_pkey PRIMARY KEY (age_dim_id)
 );
 
 CREATE TABLE IF NOT EXISTS public.office_dim(
-			 office_dim_id bigserial primary key NOT NULL,
-			 office_id bigint NOT NULL,
-			 address character varying COLLATE pg_catalog."default" NOT NULL,
-			 name character varying COLLATE pg_catalog."default" NOT NULL,
-			 city character varying COLLATE pg_catalog."default" NOT NULL,
-			 department character varying COLLATE pg_catalog."default" NOT NULL,
-			 province character varying COLLATE pg_catalog."default" NOT NULL,
-			 country character varying COLLATE pg_catalog."default" NOT NULL,
-			 site bigint NOT NULL,
-			 timestamp_from timestamp with time zone NOT NULL,
-			 timestamp_to   timestamp with time zone NOT NULL 
+			office_dim_id bigserial NOT NULL,
+			office_id bigint NOT NULL,
+			address character varying COLLATE pg_catalog."default" NOT NULL,
+			name character varying COLLATE pg_catalog."default" NOT NULL,
+			city character varying COLLATE pg_catalog."default" NOT NULL,
+			department character varying COLLATE pg_catalog."default" NOT NULL,
+			province character varying COLLATE pg_catalog."default" NOT NULL,
+			country character varying COLLATE pg_catalog."default" NOT NULL,
+			site bigint NOT NULL,
+			timestamp_from timestamp with time zone NOT NULL,
+			timestamp_to timestamp with time zone NOT NULL,
+			CONSTRAINT office_dim_pkey PRIMARY KEY (office_dim_id)
 );
 
 
@@ -149,7 +154,7 @@ CREATE TABLE IF NOT EXISTS public.source_dim(
 
 CREATE TABLE IF NOT EXISTS public.benefit_order_detail_fact
 (
-    benefit_order_detail_fact_id bigint NOT NULL DEFAULT nextval('benefit_order_detail_fact_benefit_order_detail_fact_id_seq'::regclass),
+    benefit_order_detail_fact_id bigserial NOT NULL,
     benefit_order_detail_id bigint NOT NULL,
     benefit_order_id bigint NOT NULL,
     date_id bigint NOT NULL,
@@ -213,6 +218,22 @@ CREATE TABLE IF NOT EXISTS public.benefit_order_detail_fact
 
 -------------------------------------------------------------------
 -------------------------------------------------------------------
+-------------------------- INDEXES -----------------------------
+-------------------------------------------------------------------
+-------------------------------------------------------------------
+
+CREATE INDEX ON professional_dim(professional_id);
+CREATE INDEX ON patient_dim(patient_id);
+CREATE INDEX ON office_dim(office_id, timestamp_from, timestamp_to);
+CREATE INDEX ON health_entity_dim(plan_id, timestamp_from, timestamp_to);
+CREATE INDEX ON nomenclator_dim(nomenclator_id, timestamp_from, timestamp_to);
+CREATE INDEX ON age_dim(age);
+CREATE INDEX ON piece_face_sector_dim(piece, faces, sector);
+CREATE INDEX ON source_dim(source_id);
+CREATE INDEX ON time_dim(month, year);
+
+-------------------------------------------------------------------
+-------------------------------------------------------------------
 -------------------------- PROCEDURES -----------------------------
 -------------------------------------------------------------------
 -------------------------------------------------------------------
@@ -242,8 +263,8 @@ BEGIN
 			'host=localhost user=%I password=%s dbname=%s',
 			'SELECT 
 				me.medereentity, 
-				COALESCE(me.commercialname,''Desconocido''), 
-				COALESCE(me.externalid,''Desconocido''),
+				TRIM(COALESCE(me.commercialname,''Desconocido'')), 
+				TRIM(COALESCE(me.externalid,''Desconocido'')),
 				COALESCE(chec.name,''Desconocido''),
 				CASE 
 			        WHEN upper(trim(translate(hep.name, ''áéíóúÁÉÍÓÚ'', ''aeiouAEIOU''))) = ''UNICO''
@@ -378,7 +399,7 @@ BEGIN
 				n.code,
 				nc.description,
 				COALESCE(cc.name, ''Desconocido''),
-				COALESCE(he.commercialname, ''Desconocido''),
+				TRIM(COALESCE(he.commercialname, ''Desconocido'')),
 				he.site
 			FROM nomenclator n
 			JOIN nomenclatorchapter nc ON nc.nomenclatorchapter = n.nomenclatorchapter
@@ -513,18 +534,30 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 2) Combinación vacía
+	-- 2) Insertar registro 'incorrecto'
+	IF NOT EXISTS(
+		SELECT 1
+		FROM piece_face_sector_dim
+		WHERE piece_face_sector_id = -2
+	) THEN
+		INSERT INTO piece_face_sector_dim(
+			piece_face_sector_id, piece, faces, sector
+		)
+		VALUES(-2, 'Inválido', 'Inválido', 'Inválido');
+	END IF;
+
+    -- 3) Combinación vacía
     INSERT INTO piece_face_sector_dim(piece, faces, sector)
     VALUES ('Sin pieza', 'Sin caras', 'Sin sector');
 
-    -- 3) Sectores solos
+    -- 4) Sectores solos
     FOREACH v_sector IN ARRAY sectors
     LOOP
         INSERT INTO piece_face_sector_dim(piece, faces, sector)
         VALUES ('Sin pieza', 'Sin caras', v_sector);
     END LOOP;
 
-    -- 4) Piezas sin caras ni sector
+    -- 5) Piezas sin caras ni sector
     FOR v_piece IN
         SELECT val FROM (VALUES
             (11),(12),(13),(14),(15),(16),(17),(18),
@@ -540,7 +573,7 @@ BEGIN
         VALUES (v_piece, 'Sin caras', 'Sin sector');
     END LOOP;
 
-    -- 5) Piezas con todas las combinaciones posibles de caras
+    -- 6) Piezas con todas las combinaciones posibles de caras
     FOR v_piece IN
         SELECT val FROM (VALUES
             (11),(12),(13),(14),(15),(16),(17),(18),
@@ -596,9 +629,13 @@ BEGIN
 			'host=localhost user=%I password=%s dbname=%s',
 			'SELECT 
 				me.medereentity, 
-				COALESCE(me.firstname, ''Desconocido''), 
-				COALESCE(me.lastname, ''Desconocido''),
-				COALESCE(me.gender, ''Desconocido''),
+				TRIM(COALESCE(me.firstname, ''Desconocido'')), 
+				TRIM(COALESCE(me.lastname, ''Desconocido'')), 
+				TRIM(COALESCE(me.firstname || '' '' || me.lastname, ''Desconocido'')),
+				COALESCE(CASE 
+					WHEN TRIM(me.gender) = ''M'' THEN ''Masculino''
+					ELSE ''Femenino''
+				END, ''Desconocido''),
 				me.site
 		 	FROM medereentity me
 		 	WHERE me.medereentitytype = 2'
@@ -606,6 +643,7 @@ BEGIN
 			patient_id bigint,
 			first_name character varying, 
 			last_name character varying,
+			full_name character varying,
 			gender character varying,
 			site bigint
 		)
@@ -624,10 +662,11 @@ BEGIN
 			patient_id,
 			first_name,
 			last_name,
+			full_name,
 			gender,
 			site
 		)
-		VALUES(-1, -1, 'Desconocido', 'Desconocido', 'Desconocido', -1);
+		VALUES(-1, -1, 'Desconocido', 'Desconocido', 'Desconocido', 'Desconocido', -1);
 	END IF;
 		
 	/* Actualiza los atributos lentamente cambiantes de tipo 1 */
@@ -635,21 +674,24 @@ BEGIN
 	SET
 		first_name = tpd.first_name,
 		last_name = tpd.last_name,
+		full_name = tpd.full_name,
 		gender = tpd.gender
 	FROM temp_patient_dim tpd
 	WHERE tpd.patient_id = pd.patient_id AND
 		( 	pd.first_name <> tpd.first_name OR
 			pd.last_name <> tpd.last_name OR
-			pd.gender <> tpd.gender
+			pd.gender <> tpd.gender OR
+			pd.full_name <> tpd.full_name
 		);
 	GET DIAGNOSTICS updated_records = ROW_COUNT;
 
 	/* Inserción de nuevos registros */
-	INSERT INTO patient_dim(patient_id, first_name, last_name, gender, site)
+	INSERT INTO patient_dim(patient_id, first_name, last_name, full_name, gender, site)
 	SELECT
 		tpd.patient_id,
 		tpd.first_name,
 		tpd.last_name,
+		tpd.full_name,
 		tpd.gender,
 		tpd.site
 	FROM temp_patient_dim tpd
@@ -667,7 +709,6 @@ BEGIN
     RAISE NOTICE 'Cantidad de pacientes nuevos: %', new_records;
 END
 $BODY$;
-
 
 
 CREATE OR REPLACE PROCEDURE public.load_professional_dim(
@@ -691,9 +732,13 @@ BEGIN
 			'host=localhost user=%I password=%s dbname=%s',
 			'SELECT 
 				me.medereentity, 
-				COALESCE(me.firstname, ''Desconocido''), 
-				COALESCE(me.lastname, ''Desconocido''), 
-				COALESCE(me.gender, ''Desconocido''), 
+				TRIM(COALESCE(me.firstname, ''Desconocido'')), 
+				TRIM(COALESCE(me.lastname, ''Desconocido'')), 
+				TRIM(COALESCE(me.firstname || '' '' || me.lastname, ''Desconocido'')),
+				COALESCE(CASE 
+					WHEN TRIM(me.gender) = ''M'' THEN ''Masculino''
+					ELSE ''Femenino''
+				END, ''Desconocido''),
 				COALESCE(me.workerenrollment,''Desconocido''),
 				COALESCE(me.enrollmenttype,''Desconocido''),
 				me.site
@@ -703,6 +748,7 @@ BEGIN
 			professional_id bigint,
 			first_name character varying, 
 			last_name character varying,
+			full_name character varying,
 			gender character varying,
 			license_number character varying,
 			license_type character varying,
@@ -723,12 +769,13 @@ BEGIN
 			professional_id,
 			first_name,
 			last_name,
+			full_name,
 			gender,
 			license_number,
 			license_type,
 			site
 		)
-		VALUES(-1, -1, 'Desconocido', 'Desconocido', 'Desconocido', 'Desconocido', 'Desconocido', -1);
+		VALUES(-1, -1, 'Desconocido', 'Desconocido', 'Desconocido', 'Desconocido', 'Desconocido', 'Desconocido', -1);
 	END IF;
 
 	/* Actualiza los atributos lentamente cambiantes de tipo 1 */
@@ -736,6 +783,7 @@ BEGIN
 	SET
 		first_name = tpd.first_name,
 		last_name = tpd.last_name,
+		full_name = tpd.full_name,
 		gender = tpd.gender,
 		license_number = tpd.license_number,
 		license_type = tpd.license_type
@@ -743,6 +791,7 @@ BEGIN
 	WHERE tpd.professional_id = pd.professional_id AND
 		(	pd.first_name <> tpd.first_name OR
 			pd.last_name <> tpd.last_name OR
+			pd.full_name <> tpd.full_name OR
 			pd.gender <> tpd.gender OR
 			pd.license_number <> tpd.license_number OR
 			pd.license_type <> tpd.license_type
@@ -750,11 +799,12 @@ BEGIN
 	GET DIAGNOSTICS updated_records = ROW_COUNT;
 
 	/* Inserción de nuevos registros */
-	INSERT INTO professional_dim(professional_id, first_name, last_name, gender, license_number, license_type, site)
+	INSERT INTO professional_dim(professional_id, first_name, last_name, full_name, gender, license_number, license_type, site)
 	SELECT
 		tpd.professional_id,
 		tpd.first_name,
 		tpd.last_name,
+		tpd.full_name,
 		tpd.gender,
 		tpd.license_number,
 		tpd.license_type,
@@ -796,9 +846,10 @@ BEGIN
 		age,
 		range_5,
 		range_10,
-		life_stage
+		life_stage,
+		life_stage_name
 	)
-	VALUES(-1, -1, 'Desconocido', 'Desconocido', 'Desconocido');
+	VALUES(-1, -1, 'Desconocido', 'Desconocido', -1, 'Desconocido');
 
     -- Bucle para insertar edades de 0 a 100
     FOR v_age IN 0..100 LOOP
@@ -806,7 +857,8 @@ BEGIN
             age,
             range_5,
             range_10,
-            life_stage
+            life_stage,
+			life_stage_name
         ) VALUES (
             v_age,
             CASE
@@ -846,6 +898,13 @@ BEGIN
                 ELSE 'Otros'
             END,
             CASE
+                WHEN v_age BETWEEN 0 AND 12 THEN 1
+                WHEN v_age BETWEEN 13 AND 19 THEN 2
+                WHEN v_age BETWEEN 20 AND 64 THEN 3
+                WHEN v_age >= 65 THEN 4
+                ELSE 5
+            END,
+            CASE
                 WHEN v_age BETWEEN 0 AND 12 THEN 'Niñez'
                 WHEN v_age BETWEEN 13 AND 19 THEN 'Adolescencia'
                 WHEN v_age BETWEEN 20 AND 64 THEN 'Adultez'
@@ -862,7 +921,6 @@ $$;
 CREATE OR REPLACE PROCEDURE load_time_dim()
 LANGUAGE plpgsql
 AS $$
-
 DECLARE
     v_count INTEGER;
     v_start_date DATE := '2019-12-01';
@@ -894,6 +952,7 @@ BEGIN
 		weekday,
 		weekday_name,
 		season,
+		season_name,
 		type_day,
 		week_of_the_month,
 		week_of_the_month_name,
@@ -911,7 +970,7 @@ BEGIN
 		-1, 
 		-1, 'Desconocido', 
 		-1, 'Desconocido',
-		'Desconocido',
+		-1, 'Desconocido',
 		'Desconocido', 
 		-1, 'Desconocido', 
 		-1, 'Desconocido');
@@ -935,6 +994,7 @@ BEGIN
             weekday,
             weekday_name,
             season,
+			season_name,
             type_day,
             week_of_the_month,
             week_of_the_month_name,
@@ -1011,16 +1071,18 @@ BEGIN
 				WHEN 5 THEN 'Viernes'
 				WHEN 6 THEN 'Sábado'
 			END,
+			CASE
+                WHEN EXTRACT(MONTH FROM v_current_date) IN (12, 1, 2) THEN 1
+                WHEN EXTRACT(MONTH FROM v_current_date) IN (3, 4, 5) THEN 2
+                WHEN EXTRACT(MONTH FROM v_current_date) IN (6, 7, 8) THEN 3
+                ELSE 4
+            END,
             CASE
                 WHEN EXTRACT(MONTH FROM v_current_date) IN (12, 1, 2) THEN 'Verano'
                 WHEN EXTRACT(MONTH FROM v_current_date) IN (3, 4, 5) THEN 'Otoño'
                 WHEN EXTRACT(MONTH FROM v_current_date) IN (6, 7, 8) THEN 'Invierno'
                 ELSE 'Primavera'
             END,
-            /* CASE
-                WHEN EXTRACT(DOW FROM v_current_date) IN (0, 6) THEN 'Fin de Semana'
-                ELSE 'Día de Semana'
-            END, */
 			'Dia Laborable',
             EXTRACT(WEEK FROM v_current_date) - CASE 
 				WHEN EXTRACT(WEEK FROM v_current_date) - EXTRACT(WEEK FROM DATE_TRUNC('month', v_current_date)) < 0 THEN 0
@@ -1443,9 +1505,6 @@ BEGIN
 		p_username, p_password, p_dbname
 	);
 
-	SELECT COUNT(*) INTO invalid_records
-	FROM temp_benefit_order_detail_fact;
-
 	INSERT INTO public.benefit_order_detail_fact(
 		benefit_order_detail_id,
 		benefit_order_id,
@@ -1494,14 +1553,70 @@ BEGIN
 	JOIN source_dim s ON s.source_id = tmp.source_id
 	JOIN period_dim pe ON pe.month = EXTRACT(MONTH FROM tmp.period_date)
 		AND pe.year = EXTRACT(YEAR FROM tmp.period_date)
-	WHERE NOT EXISTS(
+	WHERE tmp.date BETWEEN p_date_from AND p_date_to
+      AND NOT EXISTS(
 		SELECT 1
 		FROM public.benefit_order_detail_fact bodf
 		WHERE tmp.benefit_order_detail_id = bodf.benefit_order_detail_id
 	);
 	GET DIAGNOSTICS new_records = ROW_COUNT;
 
-	invalid_records := invalid_records - new_records;
+	/* Inserta registros inválidos de pieza, cara y sector */
+	INSERT INTO public.benefit_order_detail_fact(
+		benefit_order_detail_id,
+		benefit_order_id,
+		date_id,
+		professional_dim_id,
+		patient_dim_id,
+		office_dim_id,
+		health_entity_dim_id,
+		nomenclator_dim_id,
+		patient_age_id,
+		invoiced_amount,
+		quantity,
+		piece_face_sector_id,
+		source_dim_id,
+		period_dim_id
+	)
+	SELECT 
+		tmp.benefit_order_detail_id,
+		tmp.benefit_order_id,
+		t.time_dim_id,
+		prof.professional_dim_id,
+		pat.patient_dim_id,
+		o.office_dim_id,
+		he.health_entity_dim_id,
+		n.nomenclator_dim_id,
+		a.age_dim_id,
+		tmp.invoiced_amount,
+		tmp.quantity,
+		-2,
+		s.source_dim_id,
+		pe.period_dim_id
+	FROM temp_benefit_order_detail_fact tmp
+	JOIN time_dim t ON t.date = tmp.date
+	JOIN professional_dim prof ON prof.professional_id = tmp.professional_id
+	JOIN patient_dim pat ON pat.patient_id = tmp.patient_id
+	JOIN office_dim o ON o.office_id = tmp.office_id 
+		AND tmp.date BETWEEN o.timestamp_from AND o.timestamp_to
+	JOIN health_entity_dim he ON he.plan_id = tmp.plan_id
+		AND tmp.date BETWEEN he.timestamp_from AND he.timestamp_to
+	JOIN nomenclator_dim n ON n.nomenclator_id = tmp.nomenclator_id
+		AND tmp.date BETWEEN n.timestamp_from AND n.timestamp_to
+	JOIN age_dim a ON a.age = tmp.patient_age
+	LEFT JOIN piece_face_sector_dim pfs ON pfs.piece = tmp.piece 
+		AND pfs.faces = tmp.face
+		AND pfs.sector = tmp.sector
+	JOIN source_dim s ON s.source_id = tmp.source_id
+	JOIN period_dim pe ON pe.month = EXTRACT(MONTH FROM tmp.period_date)
+		AND pe.year = EXTRACT(YEAR FROM tmp.period_date)
+	WHERE tmp.date BETWEEN p_date_from AND p_date_to
+      AND NOT EXISTS(
+		SELECT 1
+		FROM public.benefit_order_detail_fact bodf
+		WHERE tmp.benefit_order_detail_id = bodf.benefit_order_detail_id
+	) AND pfs.piece_face_sector_id IS NULL;
+	GET DIAGNOSTICS invalid_records = ROW_COUNT;
 
     -- Reporte al operador
 	RAISE NOTICE '';

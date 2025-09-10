@@ -1,1 +1,1 @@
-CALL load_benefit_order_detail_fact('postgres','1234','OLTP');
+CALL load_benefit_order_detail_fact('postgres','1234','OLTP', '2000-01-01', '2026-01-01');
