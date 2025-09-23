@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS public.nomenclator_dim
     nomenclator_id bigint NOT NULL,
     description character varying COLLATE pg_catalog."default" NOT NULL,
     code character varying COLLATE pg_catalog."default" NOT NULL,
-    chapter character varying COLLATE pg_catalog."default" NOT NULL,
+    chapter bigint NOT NULL,
+    chapter_name character varying COLLATE pg_catalog."default" NOT NULL,
     category character varying COLLATE pg_catalog."default" NOT NULL,
     health_entity character varying COLLATE pg_catalog."default" NOT NULL,
     site bigint NOT NULL,
@@ -118,8 +119,10 @@ CREATE TABLE IF NOT EXISTS public.age_dim
 (
     age_dim_id bigserial NOT NULL,
     age integer NOT NULL,
-    range_5 character varying COLLATE pg_catalog."default" NOT NULL,
-    range_10 character varying COLLATE pg_catalog."default" NOT NULL,
+    range_5 integer NOT NULL,
+    range_5_name character varying COLLATE pg_catalog."default" NOT NULL,
+    range_10 integer NOT NULL,
+    range_10_name character varying COLLATE pg_catalog."default" NOT NULL,
     life_stage_name character varying COLLATE pg_catalog."default" NOT NULL,
     life_stage bigint NOT NULL,
     CONSTRAINT age_dim_pkey PRIMARY KEY (age_dim_id)
@@ -397,6 +400,7 @@ BEGIN
 				n.nomenclator,
 				n.description,
 				n.code,
+				nc.nomenclatorchapter,
 				nc.description,
 				COALESCE(cc.name, ''Desconocido''),
 				TRIM(COALESCE(he.commercialname, ''Desconocido'')),
@@ -411,7 +415,8 @@ BEGIN
 			nomenclator_id bigint,
 			description character varying,
 			code character varying,
-			chapter character varying,
+			chapter bigint,
+			chapter_name character varying,
 			category character varying,
 			health_entity character varying,
 			site bigint
@@ -427,9 +432,9 @@ BEGIN
 	) THEN
 		/* Inserta registro 'desconocido' */
 		INSERT INTO nomenclator_dim(
-			nomenclator_dim_id, nomenclator_id, description, code, chapter, category, health_entity, site, timestamp_from, timestamp_to
+			nomenclator_dim_id, nomenclator_id, description, code, chapter, chapter_name, category, health_entity, site, timestamp_from, timestamp_to
 		)
-		VALUES(-1, -1, 'Desconocido', 'Desconocido', 'Desconocido', 'Desconocido', 'Desconocido', -1, '1900-01-01', '9999-12-31');
+		VALUES(-1, -1, 'Desconocido', 'Desconocido', -1, 'Desconocido', 'Desconocido', 'Desconocido', -1, '1900-01-01', '9999-12-31');
 	END IF;
 
 	timestamp_now := now();
@@ -450,6 +455,7 @@ BEGIN
 		description = tmp.description,
 		code = tmp.code,
 		chapter = tmp.chapter,
+		chapter_name = tmp.chapter_name,
 		category = tmp.category
 	FROM temp_nomenclator_dim tmp
 	WHERE tmp.nomenclator_id = nd.nomenclator_id
@@ -457,19 +463,21 @@ BEGIN
 		(	nd.description <> tmp.description OR
 			nd.code <> tmp.code OR
 			nd.chapter <> tmp.chapter OR
+			nd.chapter_name <> tmp.chapter_name OR
 			nd.category <> tmp.category
 		);
 	GET DIAGNOSTICS updated_records = ROW_COUNT;
 
 	/* Inserción de nuevas versiones para registros cambiados */
 	INSERT INTO nomenclator_dim(
-	    nomenclator_id, description, code, chapter, category, health_entity, site, timestamp_from, timestamp_to
+	    nomenclator_id, description, code, chapter, chapter_name, category, health_entity, site, timestamp_from, timestamp_to
 	)
 	SELECT 
 	    tmp.nomenclator_id,
 	    tmp.description,
 	    tmp.code,
 	    tmp.chapter,
+	    tmp.chapter_name,
 	    tmp.category,
 		tmp.health_entity,
 	    tmp.site,
@@ -486,13 +494,14 @@ BEGIN
 
 	/* Inserción de nuevos registros */
 	INSERT INTO nomenclator_dim(
-	    nomenclator_id, description, code, chapter, category, health_entity, site, timestamp_from, timestamp_to
+	    nomenclator_id, description, code, chapter, chapter_name, category, health_entity, site, timestamp_from, timestamp_to
 	)
 	SELECT 
 		tmp.nomenclator_id, 
 		tmp.description, 
 		tmp.code, 
 		tmp.chapter, 
+	    tmp.chapter_name,
 		tmp.category, 
 		tmp.health_entity, 
 		tmp.site,
@@ -845,22 +854,27 @@ BEGIN
 		age_dim_id,
 		age,
 		range_5,
+		range_5_name,
 		range_10,
+		range_10_name,
 		life_stage,
 		life_stage_name
 	)
-	VALUES(-1, -1, 'Desconocido', 'Desconocido', -1, 'Desconocido');
+	VALUES(-1, -1, -1, 'Desconocido', -1, 'Desconocido', -1, 'Desconocido');
 
     -- Bucle para insertar edades de 0 a 100
     FOR v_age IN 0..100 LOOP
         INSERT INTO age_dim (
             age,
             range_5,
+			range_5_name,
             range_10,
+			range_10_name,
             life_stage,
 			life_stage_name
         ) VALUES (
             v_age,
+            floor(v_age / 5) + 1,
             CASE
                 WHEN v_age BETWEEN 0 AND 4 THEN '0-4'
                 WHEN v_age BETWEEN 5 AND 9 THEN '5-9'
@@ -881,9 +895,11 @@ BEGIN
                 WHEN v_age BETWEEN 80 AND 84 THEN '80-84'
                 WHEN v_age BETWEEN 85 AND 89 THEN '85-89'
                 WHEN v_age BETWEEN 90 AND 94 THEN '90-94'
-                WHEN v_age BETWEEN 95 AND 100 THEN '95-100'
+                WHEN v_age BETWEEN 95 AND 99 THEN '95-99'				
+                WHEN v_age BETWEEN 100 AND 104 THEN '100-104'
                 ELSE 'Otros'
             END,
+            floor(v_age / 10) + 1,
             CASE
                 WHEN v_age BETWEEN 0 AND 9 THEN '0-9'
                 WHEN v_age BETWEEN 10 AND 19 THEN '10-19'
@@ -894,7 +910,8 @@ BEGIN
                 WHEN v_age BETWEEN 60 AND 69 THEN '60-69'
                 WHEN v_age BETWEEN 70 AND 79 THEN '70-79'
                 WHEN v_age BETWEEN 80 AND 89 THEN '80-89'
-                WHEN v_age BETWEEN 90 AND 100 THEN '90-100'
+                WHEN v_age BETWEEN 90 AND 99 THEN '90-99'				
+                WHEN v_age BETWEEN 100 AND 109 THEN '100-109'
                 ELSE 'Otros'
             END,
             CASE
@@ -1391,7 +1408,7 @@ BEGIN
 					WHEN COALESCE(EXTRACT(YEAR FROM AGE(bod.date, p.birthdate)),-1) <= 100 THEN COALESCE(EXTRACT(YEAR FROM AGE(bod.date, p.birthdate)),-1)
 					ELSE -1
 				END,
-				((bod.medicalamount - COALESCE(SUM(rir.amount),0)) / bod.quantity)::numeric(10,2),
+				(bod.medicalamount - COALESCE(SUM(rir.amount),0))::numeric(10,2),
 				bod.quantity::int,
 				
 				-- PIEZA
