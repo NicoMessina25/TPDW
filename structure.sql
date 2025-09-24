@@ -1380,7 +1380,10 @@ $BODY$;
 CREATE OR REPLACE PROCEDURE public.load_benefit_order_detail_fact(
 	IN p_username character varying,
 	IN p_password character varying,
-	IN p_dbname character varying)
+	IN p_dbname character varying, 
+	IN p_date_from date,
+	IN p_date_to date
+)
 LANGUAGE 'plpgsql'
 AS $BODY$
 DECLARE
@@ -1394,7 +1397,7 @@ BEGIN
 		CREATE TEMP TABLE temp_benefit_order_detail_fact AS
 		SELECT *
 		FROM dblink(
-			'host=localhost user=postgres password=1234 dbname=OLTP',
+			'host=localhost user=%I password=%s dbname=%s',
 			'SELECT 
 				bod.benefitorderdetail,
 				bod.benefitorder,
@@ -1482,6 +1485,7 @@ BEGIN
 			LEFT JOIN medereentity p ON p.medereentity = hpc.patient
 			LEFT JOIN reinvoicingrequest rir ON rir.benefitorderdetail = bod.benefitorderdetail AND NOT rir.nulled 
 			WHERE bod.benefitorderdetailstate IN (3,4,5,7,8,10,11) -- (Facturado, Rechazado, Refacturado, Aceptado, Liquidado, Pagado, Debitado)
+				AND bod.date BETWEEN ''%s'' AND ''%s'' 
 			GROUP BY 
 				bod.benefitorderdetail,
 				bod.benefitorder,
@@ -1519,7 +1523,7 @@ BEGIN
 			period_date date
 		)
 		$sql$,
-		p_username, p_password, p_dbname
+		p_username, p_password, p_dbname, p_date_from, p_date_to
 	);
 
 	INSERT INTO public.benefit_order_detail_fact(
@@ -1570,8 +1574,7 @@ BEGIN
 	JOIN source_dim s ON s.source_id = tmp.source_id
 	JOIN period_dim pe ON pe.month = EXTRACT(MONTH FROM tmp.period_date)
 		AND pe.year = EXTRACT(YEAR FROM tmp.period_date)
-	WHERE tmp.date BETWEEN p_date_from AND p_date_to
-      AND NOT EXISTS(
+	WHERE NOT EXISTS(
 		SELECT 1
 		FROM public.benefit_order_detail_fact bodf
 		WHERE tmp.benefit_order_detail_id = bodf.benefit_order_detail_id
